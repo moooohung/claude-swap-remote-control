@@ -6543,6 +6543,35 @@ class ClaudeAccountSwitcher:
         force_activate: bool = False,
         provenance: dict | None = None,
     ) -> dict:
+        """Run the core switch, then notify Remote Control after it commits.
+
+        The core method owns every credential/config/sequence lock and may return
+        early for direct activation. Keeping the Remote Control notification in
+        this wrapper guarantees every successful account change takes the same
+        path, while the notification itself is asynchronous so callers such as
+        cswap auto do not hold their own state lock during console control.
+        """
+        result = self._perform_switch_core(
+            target_account,
+            emit_output=emit_output,
+            force_activate=force_activate,
+            provenance=provenance,
+        )
+        try:
+            from .remote_control import schedule_rebind
+
+            schedule_rebind(logger=self._logger)
+        except Exception as e:
+            self._logger.warning(f"Remote control auto-rebind scheduling skipped: {e}")
+        return result
+
+    def _perform_switch_core(
+        self,
+        target_account: str,
+        emit_output: bool = True,
+        force_activate: bool = False,
+        provenance: dict | None = None,
+    ) -> dict:
         """Perform the actual account switch with transaction support.
 
         Returns ``{"from": ref|None, "to": ref, "warnings": [...]}``, capturing the
@@ -7079,6 +7108,7 @@ class ClaudeAccountSwitcher:
             target_email,
             data["accounts"][target_account].get("organizationUuid", ""),
         )
+
         return {"from": from_ref, "to": to_ref, "warnings": warnings_out}
 
     def _print_switch_followup(self) -> None:
