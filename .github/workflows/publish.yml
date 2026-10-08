@@ -6,6 +6,7 @@ on:
 
 jobs:
   publish:
+    if: github.repository == 'realiti4/claude-swap'
     runs-on: ubuntu-latest
     permissions:
       id-token: write

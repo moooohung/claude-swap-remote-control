@@ -6,8 +6,39 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    outputs:
+      code: ${{ steps.filter.outputs.code }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dorny/paths-filter@v4
+        id: filter
+        with:
+          base: 'main'
+          filters: |
+            code:
+              - 'src/**'
+              - 'tests/**'
+              - 'pyproject.toml'
+              - 'uv.lock'
+              - '.python-version'
+              - '.github/**'
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
     runs-on: ubuntu-latest
 
     steps:
@@ -20,6 +51,8 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies
         run: uv sync --locked
@@ -27,7 +60,13 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
+      - name: Build distributable package
+        run: uv build
+
   test-windows:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
     runs-on: windows-latest
 
     steps:
@@ -37,6 +76,8 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies
         run: uv sync --locked
@@ -50,6 +91,9 @@ jobs:
   # the name branch protection matches on, and renaming it silently drops the
   # required check.
   macos-keychain:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    timeout-minutes: 15
     runs-on: macos-latest
 
     steps:
@@ -59,6 +103,8 @@ jobs:
         uses: astral-sh/setup-uv@v6
         with:
           python-version: '3.12'
+          enable-cache: true
+          cache-dependency-glob: uv.lock
 
       - name: Install dependencies
         run: uv sync --locked
@@ -80,3 +126,24 @@ jobs:
         # that holds under either ordering.
         timeout-minutes: 15
         run: uv run pytest -o faulthandler_timeout=600
+
+  packet131-ci:
+    name: Packet 131 CI
+    if: always()
+    needs: [changes, test, test-windows, macos-keychain]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Require successful selected checks
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python - <<'PY'
+          import json, os
+          jobs = json.loads(os.environ['RESULTS'])
+          assert jobs['changes']['result'] == 'success', 'Path selection failed'
+          selected = jobs['changes']['outputs']['code'] == 'true'
+          for name, job in jobs.items():
+              if name != 'changes':
+                  assert job['result'] == 'success' or (not selected and job['result'] == 'skipped'), name + ': ' + job['result']
+          PY
